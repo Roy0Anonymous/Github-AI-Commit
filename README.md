@@ -10,3 +10,8 @@ This script helps you create a detailed commit message with AI.
 ## Points to note
 
 If you don't have GPG keys setup, you might want to remove `-S` from the commit command if you face and error.
+
+## Demo
+https://github.com/user-attachments/assets/8179a54f-5641-4261-a2c3-8c190382ba14
+
+
