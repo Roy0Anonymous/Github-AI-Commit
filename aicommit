@@ -1,0 +1,127 @@
+#!/bin/bash
+
+# -------------------------
+# Checks & Configuration
+# -------------------------
+if [ -z "$GEMINI_API_KEY" ]; then
+  echo "ERROR: Please set your GEMINI_API_KEY environment variable before running this script."
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1 ; then
+  echo "ERROR: 'jq' utility not found. Please install 'jq' to parse and build JSON."
+  exit 1
+fi
+
+# -------------------------
+# Function: Generate commit message
+# -------------------------
+generate_commit_message() {
+  # Build the JSON payload safely with jq, escaping special characters
+  REQUEST_BODY=$(
+    jq -n \
+      --arg diff "$DIFF_CONTENT" \
+      '{
+        contents: [
+          {
+            parts: [
+              {
+                text: (
+                  "Analyze the following Git diff and produce a concise, well-written commit message describing the changes:\n\n" + $diff
+                )
+              }
+            ]
+          }
+        ]
+      }'
+  )
+
+  # Call Gemini API
+  local response
+  response=$(curl -s -X POST "$API_URL" \
+                -H "Content-Type: application/json" \
+                -d "$REQUEST_BODY")
+
+  # Extract commit message
+  local message
+  message=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
+
+  # Remove triple backticks and surrounding whitespace
+  message=$(echo "$message" | sed -e 's/```//g' -e 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+  if [ -z "$message" ]; then
+    echo "Failed to generate a commit message. Response from API was:"
+    echo "$response"
+    exit 1
+  fi
+
+  echo "$message"
+}
+
+# -------------------------
+# Git operations
+# -------------------------
+git add .
+
+DIFF_CONTENT=$(git diff --cached)
+if [ -z "$DIFF_CONTENT" ]; then
+  echo "No changes detected in the staging area. Exiting..."
+  exit 0
+fi
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# -------------------------
+# Gemini API Endpoint
+# -------------------------
+API_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-thinking-exp:generateContent?key=$GEMINI_API_KEY"
+
+# -------------------------
+# Generate initial message
+# -------------------------
+COMMIT_MESSAGE=$(generate_commit_message)
+
+# -------------------------
+# Prompt user for action in a loop
+# -------------------------
+while true; do
+  echo "Generated Commit Message:"
+  echo "----------------------------------------"
+  echo "$COMMIT_MESSAGE"
+  echo "----------------------------------------"
+  echo "What would you like to do?"
+  echo "  [E] Edit in Vim"
+  echo "  [R] Regenerate Commit Message"
+  echo "  [A] Accept commit message (or press Enter)"
+  read -r -p "Choice (E/R/A): " choice
+
+  case "$choice" in
+    [Ee])
+      # Create a temp file and open in Vim for editing
+      TEMP_FILE="$(mktemp)"
+      echo "$COMMIT_MESSAGE" > "$TEMP_FILE"
+      vim "$TEMP_FILE"
+      COMMIT_MESSAGE="$(cat "$TEMP_FILE")"
+      rm "$TEMP_FILE"
+      ;;
+    [Rr])
+      # Regenerate the commit message
+      echo "Regenerating commit message..."
+      COMMIT_MESSAGE=$(generate_commit_message)
+      ;;
+    ""|[Aa])
+      # Accept and break
+      break
+      ;;
+    *)
+      # Invalid input, assume user wants to accept
+      break
+      ;;
+  esac
+done
+
+# -------------------------
+# Create and push commit
+# -------------------------
+git commit -S -m "$COMMIT_MESSAGE"
+git push -u origin "$CURRENT_BRANCH"
